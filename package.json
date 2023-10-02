@@ -31,8 +31,8 @@
 					"type": "string",
 					"scope": "application",
 					"description": "Character to use in place of underscore",
-					"default": ":",
-					"examples": [":", "ː", "ˑ", "·"]
+					"default": "ː",
+					"examples": ["ː", "ˑ", "·"]
 				}
 			}
 		}
