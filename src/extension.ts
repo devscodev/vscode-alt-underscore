@@ -1,76 +1,90 @@
-import { commands, ExtensionContext, window, workspace, WorkspaceConfiguration } from "vscode";
-import { Decorator } from "./decorator";
-import { Commands, Settings } from "./enums";
-import { EventsLimit } from "./utils";
-import { Cache } from "./cache";
+import { ExtensionContext, Range, TextDocumentChangeReason, ThemeColor, window, workspace } from "vscode"
 
-export function activate(context: ExtensionContext) {
-  const config: WorkspaceConfiguration = workspace.getConfiguration(Settings.identifier);
-  const decorator = new Decorator();
-  const elimit = new EventsLimit();
-  decorator.updateConfigs(config);
-  elimit.Register(triggerUpdateDecorations);
-  elimit.Lead();
+const DECORATOR_TYPE = window.createTextEditorDecorationType(
+{
+    before:
+    {
+        contentText: ":",
+        color: new ThemeColor("disabledForeground")
+    },
+    textDecoration: "none; display: none;"
+})
 
-  function triggerUpdateDecorations(): void {
-    const textEditor = window.activeTextEditor;
-    if (!textEditor) return;
-    decorator.activeEditor(textEditor);
-  }
+const BUFFER_LENGTH = 50
+const SUPPORTED_LANGS = ["csharp", "json", "jsonl", "jsonc", "javascript", "javascriptreact", "typescript", "typescriptreact"]
+let UPDATE_DECORATIONS_IF_BUFFER_ELAPSED_STATE: boolean = false
+let UPDATE_DECORATIONS_WITH_DELAY_TIMEOUT: NodeJS.Timeout = undefined
 
-  const toggleCommand = commands.registerCommand(Commands.InlineFoldToggle, () => {
-    decorator.toggle();
-  });
+function UpdateDecorations(): void
+{
+    const textEditor = window.activeTextEditor
 
-  const clearCacheCommand = commands.registerCommand(Commands.InlineFoldClearCache, () => {
-    Cache.ClearCache();
-  });
+    if (!SUPPORTED_LANGS.includes(textEditor.document.languageId)) return
 
-  const activeTextEditor = window.onDidChangeActiveTextEditor((e) => {
-    if (!e) return;
-    elimit.Trail();
-  });
+    let firstTargetLine = Math.max(0, textEditor.visibleRanges[0].start.line - BUFFER_LENGTH)
+    let lastTargetLine = Math.min(textEditor.document.lineCount, textEditor.visibleRanges[0].end.line + BUFFER_LENGTH)
 
-  const changeSelection = window.onDidChangeTextEditorSelection((e) => {
-    elimit.Lead();
-  });
+    const text = textEditor.document.getText()
+    const foldRanges: Range[] = []
 
-  const changeVisibleRange = window.onDidChangeTextEditorVisibleRanges((e) => {
-    if (!e.textEditor) return;
-    elimit.Trail();
-  });
+    for (let underscoreOffset = text.indexOf("_"); underscoreOffset != -1; underscoreOffset = text.indexOf("_", underscoreOffset + 1))
+    {
+        const foldStartPosition = textEditor.document.positionAt(underscoreOffset)
+        const foldEndPosition = textEditor.document.positionAt(underscoreOffset + 1)
+        if (firstTargetLine > foldStartPosition.line || foldEndPosition.line > lastTargetLine) continue
 
-  const changeText = workspace.onDidChangeTextDocument((e) => {
-    // e.reason = 1 when undo
-    // e.reason = 2 when redo
-    // this event gets fired when any change happens to any text document in the workspace
-    // so to limit the decoration it will fire when the change is caused by undo/redo
-    // since `changeSelection` gets fired as well while typing or moving lines.
-    if (e.reason !== 1 && e.reason !== 2) return;
-    elimit.Trail();
-  });
+        const foldRange = new Range(foldStartPosition, foldEndPosition)
 
-  const changeConfiguration = workspace.onDidChangeConfiguration((event) => {
-    if (event.affectsConfiguration(Settings.identifier)) {
-      if (!event.affectsConfiguration(Settings.autoFold)) {
-        Cache.ClearCache();
-      }
-      decorator.updateConfigs(workspace.getConfiguration(Settings.identifier));
+        // Only replace underscore if character is not part of current selection
+        if (!textEditor.selection.contains(foldRange) && !textEditor.selections.find(s => foldRange.contains(s)))
+        {
+            foldRanges.push(foldRange)
+        }
     }
-  });
 
-  // Add to a list of disposables to the editor context
-  // which are disposed when this extension is deactivated.
-  context.subscriptions.push(changeText);
-  context.subscriptions.push(toggleCommand);
-  context.subscriptions.push(changeSelection);
-  context.subscriptions.push(activeTextEditor);
-  context.subscriptions.push(clearCacheCommand);
-  context.subscriptions.push(changeVisibleRange);
-  context.subscriptions.push(changeConfiguration);
+    textEditor.setDecorations(DECORATOR_TYPE, foldRanges)
 }
 
-// this method is called when your extension is deactivated
-export function deactivate(context: ExtensionContext) {
-  context.subscriptions.forEach((d) => d.dispose());
+/**
+* Update decorations if this method hasn't been called in tha last 100ms.
+*/
+function UpdateDecorationsIfBufferElapsed(): void
+{
+    if (!UPDATE_DECORATIONS_IF_BUFFER_ELAPSED_STATE)
+    {
+        UPDATE_DECORATIONS_IF_BUFFER_ELAPSED_STATE = true
+        setTimeout(() => UPDATE_DECORATIONS_IF_BUFFER_ELAPSED_STATE = false, 100)
+        UpdateDecorations()
+    }
+}
+
+/**
+* Update decorations 100ms from now. If decorations are already scheduled to
+* update, delay them an additional 100ms.
+*/
+function UpdateDecorationsWithDelay(): void
+{
+    if (!!UPDATE_DECORATIONS_WITH_DELAY_TIMEOUT) clearTimeout(UPDATE_DECORATIONS_WITH_DELAY_TIMEOUT)
+    UPDATE_DECORATIONS_WITH_DELAY_TIMEOUT = setTimeout(() => UpdateDecorations(), 100)
+}
+
+export function activate(context: ExtensionContext): void
+{
+    UpdateDecorationsIfBufferElapsed()
+    context.subscriptions.push
+    (
+        //On cursor move or selection alteration...
+        window.onDidChangeTextEditorSelection(() => UpdateDecorationsIfBufferElapsed()),
+        //On switch active editor...
+        window.onDidChangeActiveTextEditor((e) => !!e && UpdateDecorationsWithDelay()),
+        //On editor scrolled or size changed...
+        window.onDidChangeTextEditorVisibleRanges((e) => !!e.textEditor && UpdateDecorationsWithDelay()),
+        //On text altered due to undo or redo...
+        workspace.onDidChangeTextDocument((e) => (e.reason === TextDocumentChangeReason.Undo || e.reason === TextDocumentChangeReason.Redo) && UpdateDecorationsWithDelay())
+    )
+}
+
+export function deactivate(context: ExtensionContext): void
+{
+    context.subscriptions.forEach((d) => d.dispose())
 }
